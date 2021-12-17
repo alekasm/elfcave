@@ -8,11 +8,8 @@
 #include <byteswap.h>
 #include <stdbool.h>
 
-
-
 int main(int argc, const char** argv)
 {
-
   const char* file_name;
   const char* new_section_name;
   int new_section_size;
@@ -149,7 +146,7 @@ program:
   Elf64_Shdr new_shdr;
   new_shdr.sh_name = 0;
   new_shdr.sh_type = SHT_PROGBITS;
-  new_shdr.sh_flags = SHF_EXECINSTR | SHF_WRITE;
+  new_shdr.sh_flags = SHF_EXECINSTR | SHF_WRITE | SHF_ALLOC;
   new_shdr.sh_size = new_section_size;
   new_shdr.sh_offset = shdr[file_header.e_shnum - 2].sh_offset +
                        shdr[file_header.e_shnum - 2].sh_size;
