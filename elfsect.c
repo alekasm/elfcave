@@ -56,7 +56,7 @@ int main(int argc, const char** argv)
   printf("Usage: %s <file> <args>\n", argv[0]);
   return 1;
   
-program:
+program: ;
   FILE* ihandle = fopen(file_name, "rb");
   if(ihandle == NULL)
   {
