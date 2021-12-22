@@ -123,10 +123,12 @@ program: ;
   
   //Increase the offset of all subsequent section header tables
   //to account for addition of new string to the string table
-  for(unsigned i = file_header.e_shstrndx;
-      i < file_header.e_shnum - 2; ++i)
+  unsigned next_index = file_header.e_shstrndx + 1;
+  unsigned last_index = file_header.e_shnum - 1;
+  for(unsigned i = next_index;
+      i < last_index; ++i)
   {
-    printf("(%u, %u) Increasing %s offset by %lX\n",
+    printf("Increasing %s offset by %lX\n",
     i, file_header.e_shstrndx,
     string_table + shdr[i].sh_name, strtab_size_increase);
     shdr[i].sh_offset += strtab_size_increase;
