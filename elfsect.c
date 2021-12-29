@@ -22,7 +22,7 @@ int main(int argc, const char** argv)
   }
   if(strcmp(argv[1], "--help") == 0)
   {
-    printf("Written by Aleksander Krimsky v1.0\n");
+    printf("Written by Aleksander Krimsky v1.1\n");
     printf("--print\n");
     printf("--add <section name> <section size>\n");
     return 1;
@@ -97,47 +97,59 @@ program: ;
     printf("Phdr size mismatch\n");
     return 1;
   }
+  printf("Entry=0x%lX\n", file_header.e_entry);
+  
+  printf("Sections=%u, Offset=%lX\n", file_header.e_shnum, file_header.e_shoff); 
   Elf64_Phdr* phdr = (Elf64_Phdr*)(ibuffer + file_header.e_phoff);
   Elf64_Shdr* shdr = (Elf64_Shdr*)(ibuffer + file_header.e_shoff);
   Elf64_Shdr* shdr_strtab = &shdr[file_header.e_shstrndx];  
   const char *const string_table = ibuffer + shdr_strtab->sh_offset;
 
-  printf("Section Headers: %lu\n", file_header.e_shnum);
   for(unsigned i = 0; i < file_header.e_shnum; ++i)
   {  
-    printf("[%02u|%08lx] Section Offset=%08lX, Size=%08lX, Name=%s\n",
+    printf("[%02u] Section Offset=%08lX, Size=%08lX, Addr=%08lX, Name=%s\n",
         i,
-        (uint8_t*)&shdr[i] - ibuffer,
         shdr[i].sh_offset,
         shdr[i].sh_size,
+        shdr[i].sh_addr,
         string_table + shdr[i].sh_name);
   }
-  if(print_only) return 0;
   
-  //Modify existing sections
-  file_header.e_shnum += 1;  
+  printf("Segments=%u, Offset=%lX\n", file_header.e_phnum, file_header.e_phoff);
+  unsigned last_vaddress_index = 0;
+  unsigned last_vaddress = 0;
+  for(unsigned i = 0; i < file_header.e_phnum; ++i)
+  {
+    printf("[%02u] Segment Offset=%08lX, MemSz=%08lX, VAddress=%08lX\n",
+      i,
+      phdr[i].p_offset,
+      phdr[i].p_memsz,
+      phdr[i].p_vaddr);
+    
+    unsigned vaddress = phdr[i].p_vaddr;
+    if(vaddress > last_vaddress)
+    {
+     last_vaddress_index = i;
+     last_vaddress = vaddress;
+    }
+  }  
+  
+  if(print_only) return 0;
+  unsigned end_addr = phdr[last_vaddress_index].p_vaddr + 
+                      phdr[last_vaddress_index].p_memsz;
+                      
+  //Modify existing sections  
   size_t strtab_old_size = shdr_strtab->sh_size;
   size_t new_strlen = strlen(new_section_name) + 1;
-  shdr_strtab->sh_size += new_strlen;
+  shdr_strtab->sh_size += new_strlen;  
   size_t strtab_size_increase = shdr_strtab->sh_size - strtab_old_size;
-  
-  //Increase the offset of all subsequent section header tables
-  //to account for addition of new string to the string table
-  unsigned next_index = file_header.e_shstrndx + 1;
-  unsigned last_index = file_header.e_shnum - 1;
-  for(unsigned i = next_index;
-      i < last_index; ++i)
-  {
-    printf("Increasing %s offset by %lX\n",
-    i, file_header.e_shstrndx,
-    string_table + shdr[i].sh_name, strtab_size_increase);
-    shdr[i].sh_offset += strtab_size_increase;
-  }  
   
   long int olen = ilen;
   olen += strtab_size_increase;
   olen += new_section_size;
-  olen += sizeof(Elf64_Shdr);
+  olen += sizeof(Elf64_Shdr); //New section header
+  //ZZZ //olen += sizeof(Elf64_Phdr); //New program header
+  olen += 8; //TODO figure this out
   uint8_t* obuffer = (uint8_t*)malloc(olen);
   if(obuffer == NULL)
   {
@@ -146,53 +158,106 @@ program: ;
   }
   
   Elf64_Shdr new_shdr;
-  new_shdr.sh_name = 0;
+  //new_shdr.sh_name = 0;
+  new_shdr.sh_name = strtab_old_size;
   new_shdr.sh_type = SHT_PROGBITS;
   new_shdr.sh_flags = SHF_EXECINSTR | SHF_WRITE | SHF_ALLOC;
-  new_shdr.sh_size = new_section_size;
-  new_shdr.sh_offset = shdr[file_header.e_shnum - 2].sh_offset +
-                       shdr[file_header.e_shnum - 2].sh_size;
-  file_header.e_shoff = new_shdr.sh_size + new_shdr.sh_offset;  
- 
+  new_shdr.sh_addr = end_addr + 1;
+  new_shdr.sh_offset = shdr[file_header.e_shnum - 1].sh_offset +
+                       shdr[file_header.e_shnum - 1].sh_size;  
+  new_shdr.sh_size = new_section_size;  
+  new_shdr.sh_link = 0;
+  new_shdr.sh_info = 0;
+  new_shdr.sh_addralign = 0x1;
+  new_shdr.sh_entsize = sizeof(Elf64_Shdr);
+  //This will always come after any existing data
+  new_shdr.sh_offset += strtab_size_increase;
+  //ZZZ //new_shdr.sh_offset += sizeof(Elf64_Phdr);
+  
+  Elf64_Phdr new_phdr;
+  new_phdr.p_type = PT_LOAD;
+  new_phdr.p_flags = PF_R | PF_W | PF_X;
+  new_phdr.p_offset = new_shdr.sh_offset;
+  new_phdr.p_vaddr = end_addr + 1;
+  new_phdr.p_paddr = new_phdr.p_vaddr;
+  new_phdr.p_filesz = new_phdr.p_memsz;
+  new_phdr.p_memsz = new_shdr.sh_size;  
+  new_phdr.p_align = 0x1;
+  
+  file_header.e_shnum += 1;
+  //file_header.e_phnum += 1;  
+  file_header.e_shoff = new_shdr.sh_size + new_shdr.sh_offset;
+  //file_header.e_phoff unchanged  
+
   //ELF Header
   memcpy(obuffer, &file_header, sizeof(Elf64_Ehdr));
+  printf("Elf Header %lX - %lX\n", 0, sizeof(Elf64_Ehdr));
 
   //Program Header Table
-  if(file_header.e_phoff)
+  uint8_t* obuffer_ppht = obuffer + file_header.e_phoff;
+  for(unsigned i = 0; i < file_header.e_phnum; ++i)
   {
-    memcpy(obuffer + sizeof(Elf64_Ehdr),
-           ibuffer + sizeof(Elf64_Ehdr),
-           sizeof(Elf64_Phdr) * file_header.e_phnum);
+    printf("PHDR[%u] %lX - ", i, obuffer_ppht - obuffer);
+    memcpy(obuffer_ppht, &phdr[i], sizeof(Elf64_Phdr));
+    obuffer_ppht += sizeof(Elf64_Phdr);
+    printf("%lX\n", obuffer_ppht - obuffer);
   }
+  /*
+  memcpy(obuffer_ppht, &new_phdr, sizeof(Elf64_Phdr)); 
+  printf("* PHDR[%u] %lX - %lX\n", file_header.e_phnum - 1,
+    obuffer_ppht - obuffer,
+    (obuffer_ppht + sizeof(Elf64_Phdr)) - obuffer);
+    */
   
   //Sections  
   for(unsigned i = 0; i < file_header.e_shnum - 1; ++i)
   {
-    memcpy(obuffer + shdr[i].sh_offset, ibuffer + shdr[i].sh_offset, shdr[i].sh_size);
-    if(i == file_header.e_shstrndx)
+    if(shdr[i].sh_size == 0) continue;    
+    Elf64_Off old_offset = shdr[i].sh_offset;
+    Elf64_Off new_offset = old_offset;// + sizeof(Elf64_Phdr) + 1;
+    if(i > file_header.e_shstrndx)
     {
-      new_shdr.sh_name = strtab_old_size;
-      memcpy(obuffer + shdr[i].sh_offset + new_shdr.sh_name, new_section_name, new_strlen);
+      new_offset += strtab_size_increase;
     }
+    memcpy(obuffer + new_offset, ibuffer + old_offset, shdr[i].sh_size);
+    printf("Section[%u] %lX - %lX\n", i, new_offset, new_offset + shdr[i].sh_size);
+    if(i == file_header.e_shstrndx)
+    {      
+      memcpy(obuffer + new_offset + new_shdr.sh_name, new_section_name, new_strlen);
+    }
+    shdr[i].sh_offset = new_offset;
   }
   memset(obuffer + new_shdr.sh_offset, 0, new_shdr.sh_size);
-
+  printf("* Section[%u] %lX - %lX\n",
+    file_header.e_shnum - 1,
+    new_shdr.sh_offset,
+    new_shdr.sh_offset + new_shdr.sh_size);
+  
   uint8_t* obuffer_psht = obuffer + file_header.e_shoff;
   //Section Header Table  
   for(unsigned i = 0; i < file_header.e_shnum - 1; ++i)
   {
+    //shdr[i].sh_offset += sizeof(Elf64_Phdr);
+    printf("SHDR[%u -> %lX] %lX - ", i, shdr[i].sh_offset, obuffer_psht - obuffer);
     memcpy(obuffer_psht, &shdr[i], sizeof(Elf64_Shdr));
     obuffer_psht += sizeof(Elf64_Shdr);
+    printf("%lX\n", obuffer_psht - obuffer);
   }
   memcpy(obuffer_psht, &new_shdr, sizeof(Elf64_Shdr));
+    printf("* SHDR[%u] %lX - %lX\n", file_header.e_shnum - 1,
+    obuffer_psht - obuffer,
+    (obuffer_psht + sizeof(Elf64_Shdr)) - obuffer); 
   
   printf("File size increased from %lX -> %lX\n", ilen, olen);
+  printf("Updated Ehdr Phdr Number: %lu\n", file_header.e_phnum);
   printf("Updated Ehdr Shdr Offset: %lX\n", file_header.e_shoff);
   printf("Updated Ehdr Shdr Number: %lu\n", file_header.e_shnum);
   printf("Increase string table size from %lX -> %lX\n",
     strtab_old_size, shdr_strtab->sh_size);
-  printf("Added Section: %s, Offset: %lX, Size: %lX\n",
-    new_section_name, new_shdr.sh_offset, new_shdr.sh_size);
+  printf("Added Section: %s, Offset: %lX, Size: %lX, Address: %lX\n",
+    new_section_name, new_shdr.sh_offset, new_shdr.sh_size, new_shdr.sh_addr);
+  printf("Added Segment: Offset: %lX, VAddress: %lX, MemSz: %lX\n",
+    new_phdr.p_offset, new_phdr.p_vaddr, new_phdr.p_memsz);
     
   FILE* ohandle = fopen("out", "wb");
   if(ohandle == NULL)
@@ -201,7 +266,6 @@ program: ;
     return 1;
   }
   fwrite(obuffer, sizeof(uint8_t), olen, ohandle);
-  fclose(ohandle);
-         
+  fclose(ohandle);        
   return 0;
 }
