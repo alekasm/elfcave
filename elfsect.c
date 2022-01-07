@@ -201,7 +201,6 @@ program: ;
   //olen += strtab_size_increase;
   olen += new_section_size;
   olen += sizeof(Elf64_Shdr); //New section header
-  //olen += phdr_size; //New program header size
   olen += 0x8; //TODO figure this out
   uint8_t* obuffer = (uint8_t*)malloc(olen);
   if(obuffer == NULL)
@@ -227,14 +226,10 @@ program: ;
 
   
   file_header.e_shnum += 1;
-  //file_header.e_shoff += new_shdr.sh_offset;
-  //file_header.e_phoff = phdr_offset;
-  //file_header.e_entry += sizeof(Elf64_Phdr);
   printf("PHOFF: %lX\n", file_header.e_phoff);
 
   //ELF Header
   memcpy(obuffer, &file_header, sizeof(Elf64_Ehdr));
-  //memcpy(obuffer + sizeof(Elf64_Phdr), &file_header, sizeof(Elf64_Ehdr));
   printf("Elf Header %lX - %lX\n", 0, sizeof(Elf64_Ehdr));
 
   //Program Header Table
