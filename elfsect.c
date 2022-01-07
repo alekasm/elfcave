@@ -107,52 +107,101 @@ program: ;
 
   for(unsigned i = 0; i < file_header.e_shnum; ++i)
   {  
-    printf("[%02u] Section Offset=%08lX, Size=%08lX, Addr=%08lX, Name=%s\n",
+    printf("[%02u] Section Offset=%08lX, Size=%08lX, Addr=%08lX - %08lX, Name=%s\n",
         i,
         shdr[i].sh_offset,
         shdr[i].sh_size,
         shdr[i].sh_addr,
+        shdr[i].sh_addr + shdr[i].sh_size,
         string_table + shdr[i].sh_name);
   }
   
   printf("Segments=%u, Offset=%lX\n", file_header.e_phnum, file_header.e_phoff);
-  unsigned last_vaddress_index = 0;
-  unsigned last_vaddress = 0;
   for(unsigned i = 0; i < file_header.e_phnum; ++i)
   {
-  unsigned end_vaddress = phdr[i].p_vaddr + phdr[i].p_memsz;
-    printf("[%02u] Segment Offset=%08lX, MemSz=%08lX, VAddress=%08lX - %08lX\n",
+    printf("[%02u] Segment Offset=%08lX, Size=%08lX, Addr=%08lX - %08lX\n",
       i,
       phdr[i].p_offset,
       phdr[i].p_memsz,
       phdr[i].p_vaddr,
-      end_vaddress);    
-    if(end_vaddress > last_vaddress)
-    {
-     last_vaddress_index = i;
-     last_vaddress = end_vaddress;
-    }
+      phdr[i].p_vaddr + phdr[i].p_memsz);
   }
-  unsigned new_vaddress = (last_vaddress % 4) + last_vaddress + 0x1000;
+  
+  printf("Sizeof Segments + Header = %lX\n", sizeof(Elf64_Ehdr) + file_header.e_phnum * sizeof(Elf64_Phdr));
   
   if(print_only) return 0;
 
-  printf("end_addr=%X\n", last_vaddress);
-  printf("Last vindex = %u\n", last_vaddress_index);
-  printf("addr = %lX, memsz = %lX\n", phdr[last_vaddress_index].p_vaddr,
-  phdr[last_vaddress_index].p_memsz);                      
+                
                       
   //Modify existing sections  
-  size_t strtab_old_size = shdr_strtab->sh_size;
-  size_t new_strlen = strlen(new_section_name) + 1;
-  shdr_strtab->sh_size += new_strlen;  
-  size_t strtab_size_increase = shdr_strtab->sh_size - strtab_old_size;
+  //size_t strtab_old_size = shdr_strtab->sh_size;
+  //size_t new_strlen = strlen(new_section_name) + 1;
+  //shdr_strtab->sh_size += new_strlen;  
+  //size_t strtab_size_increase = shdr_strtab->sh_size - strtab_old_size;
+  
+  
+  int last_phdr_index = -1;
+  unsigned last_phdr_vaddress = 0;
+  for(unsigned i = 0; i < file_header.e_phnum; ++i)
+  {
+    if(phdr[i].p_type != PT_LOAD) continue;
+    unsigned end_vaddress = phdr[i].p_vaddr + phdr[i].p_memsz;    
+    if(end_vaddress > last_phdr_vaddress)
+    {
+     last_phdr_index = i;
+     last_phdr_vaddress = end_vaddress;
+    }
+  }
+  
+  int shdr_collision_index = -1;
+  for(unsigned i = 0; i < file_header.e_shnum; ++i)
+  {
+    if(shdr[i].sh_addr > last_phdr_vaddress)
+    {
+     shdr_collision_index = i;
+     break;
+    }
+  }
+  
+  if(last_phdr_index == -1)
+  {
+    printf("Unable to find a PT_LOAD PHDR to extend\n");
+    return 1;
+  }  
+  
+  if(shdr_collision_index > -1)
+  {
+    unsigned max_section_size =
+      shdr[shdr_collision_index].sh_addr - 
+      last_phdr_vaddress;
+    if(new_section_size > max_section_size)
+    {
+      printf("There is a SHDR[%u] that gets loaded past the"
+         "last PT_LOAD PHDR[%d] that we wish to extend\n"
+         "New Section Size: %d\n",
+         shdr_collision_index,
+         last_phdr_index,
+         max_section_size);
+      new_section_size = max_section_size;
+    }
+  }  
+ 
+  printf("Selected PHDR[%d] to extend\n", last_phdr_index);
+  //return 0;
+
+  //file_header.e_phnum += 1;
+
+
+  unsigned next_shdr_offset = file_header.e_shoff + (file_header.e_shnum + 1) * sizeof(Elf64_Shdr);
+  unsigned cave_vaddress = last_phdr_vaddress;
+  printf("Next SHDR: %lX\n", next_shdr_offset);
+  printf("New Cave VAddress = %lX\n", cave_vaddress);
   
   long int olen = ilen;
-  olen += strtab_size_increase;
+  //olen += strtab_size_increase;
   olen += new_section_size;
   olen += sizeof(Elf64_Shdr); //New section header
-  olen += sizeof(Elf64_Phdr); //New program header
+  //olen += phdr_size; //New program header size
   olen += 0x8; //TODO figure this out
   uint8_t* obuffer = (uint8_t*)malloc(olen);
   if(obuffer == NULL)
@@ -161,116 +210,69 @@ program: ;
     return 1;
   }
   
-  
   Elf64_Shdr new_shdr;
-  //new_shdr.sh_name = 0;
-  new_shdr.sh_name = strtab_old_size;
+  new_shdr.sh_name = 0;
+  //new_shdr.sh_name = strtab_old_size;
   new_shdr.sh_type = SHT_PROGBITS;
   new_shdr.sh_flags = SHF_EXECINSTR | SHF_WRITE | SHF_ALLOC;
-  new_shdr.sh_addr = new_vaddress;
-  new_shdr.sh_offset = shdr[file_header.e_shnum - 1].sh_offset +
-                       shdr[file_header.e_shnum - 1].sh_size;  
+  new_shdr.sh_addr = cave_vaddress;
+  new_shdr.sh_offset = next_shdr_offset; 
   new_shdr.sh_size = new_section_size;  
   new_shdr.sh_link = 0;
   new_shdr.sh_info = 0;
   new_shdr.sh_addralign = 0x1;
   new_shdr.sh_entsize = sizeof(Elf64_Shdr);
   //This will always come after any existing data
-  new_shdr.sh_offset += strtab_size_increase;
-  new_shdr.sh_offset += sizeof(Elf64_Phdr);
-  
-  
-  Elf64_Phdr new_phdr;
-  new_phdr.p_type = PT_LOAD;
-  new_phdr.p_flags = PF_R | PF_W | PF_X;
-  new_phdr.p_align = 0x1000;
-  new_phdr.p_offset = new_shdr.sh_offset - (new_shdr.sh_offset % new_phdr.p_align);
-  //new_phdr.p_vaddr = new_vaddress;
-  new_phdr.p_vaddr = new_phdr.p_offset + 0x400000;
-  new_phdr.p_paddr = new_phdr.p_vaddr;
-  new_phdr.p_memsz = new_shdr.sh_size + (new_shdr.sh_offset % new_phdr.p_align);
-  new_phdr.p_filesz = new_phdr.p_memsz;
-  
-  
-  /*
-  Elf64_Phdr new_phdr;
-  new_phdr.p_type = PT_NOTE;
-  new_phdr.p_flags = PF_R;
-  new_phdr.p_align = 0x1000;
-  new_phdr.p_offset = 0; //new_shdr.sh_offset - (new_shdr.sh_offset % new_phdr.p_align);
-  //new_phdr.p_vaddr = new_vaddress;
-  new_phdr.p_vaddr = 0; //new_phdr.p_offset + 0x400000;
-  new_phdr.p_paddr = 0; //new_phdr.p_vaddr;
-  new_phdr.p_memsz = 0; //new_shdr.sh_size + (new_shdr.sh_offset % new_phdr.p_align);
-  new_phdr.p_filesz = 0;//new_phdr.p_memsz;
-  */
+  //new_shdr.sh_offset += strtab_size_increase;
+
   
   file_header.e_shnum += 1;
-  file_header.e_phnum += 1;  
-  file_header.e_shoff = new_shdr.sh_size + new_shdr.sh_offset;
+  //file_header.e_shoff += new_shdr.sh_offset;
+  //file_header.e_phoff = phdr_offset;
   //file_header.e_entry += sizeof(Elf64_Phdr);
+  printf("PHOFF: %lX\n", file_header.e_phoff);
 
   //ELF Header
   memcpy(obuffer, &file_header, sizeof(Elf64_Ehdr));
+  //memcpy(obuffer + sizeof(Elf64_Phdr), &file_header, sizeof(Elf64_Ehdr));
   printf("Elf Header %lX - %lX\n", 0, sizeof(Elf64_Ehdr));
 
   //Program Header Table
-  
   uint8_t* obuffer_ppht = obuffer + file_header.e_phoff;
-  for(unsigned i = 0; i < file_header.e_phnum - 1; ++i)
-  {
+  for(unsigned i = 0; i < file_header.e_phnum; ++i)
+  {    
     printf("PHDR[%u] %lX - ", i, obuffer_ppht - obuffer);
     Elf64_Phdr update_phdr = phdr[i];
-    update_phdr.p_offset += sizeof(Elf64_Phdr);
-    /*
-    //update_phdr.p_offset += sizeof(Elf64_Phdr);
-    //update_phdr.p_vaddr += sizeof(Elf64_Phdr);
-    //update_phdr.p_paddr += sizeof(Elf64_Phdr);
-    if(phdr[i].p_type == PT_DYNAMIC)
+    if(i == last_phdr_index)
     {
-      double len = update_phdr.p_filesz / sizeof(Elf64_Dyn);
-      //printf("DYNAMIC SECTION=%lX (%u), Length = %f\n", obuffer_ppht - obuffer, i, len);
-      
-      for(unsigned j = 0; j < len; ++j)
-      {
-        Elf64_Dyn* dyn = (Elf64_Dyn*)(&update_phdr + j);
-        if(dyn->d_tag == DT_STRTAB)
-        {
-          Elf64_Addr addr = (Elf64_Addr)dyn->d_un.d_ptr;
-          //printf("Dynamic Segment[%u][%u] PT_STRTAB=%lx\n", i, j, addr);
-        }
-      }
-    }
-    */
+      update_phdr.p_memsz += new_section_size;
+      update_phdr.p_filesz = update_phdr.p_memsz;
+      update_phdr.p_flags = PF_R | PF_W | PF_X;
+    }    
+
     memcpy(obuffer_ppht, &update_phdr, sizeof(Elf64_Phdr));
     obuffer_ppht += sizeof(Elf64_Phdr);
     printf("%lX\n", obuffer_ppht - obuffer);
   }
   
-  memcpy(obuffer_ppht, &new_phdr, sizeof(Elf64_Phdr)); 
-  printf("* PHDR[%u] %lX - %lX\n", file_header.e_phnum - 1,
-    obuffer_ppht - obuffer,
-    (obuffer_ppht + sizeof(Elf64_Phdr)) - obuffer);    
-  
   //Sections  
   for(unsigned i = 0; i < file_header.e_shnum - 1; ++i)
   {
     if(shdr[i].sh_size == 0) continue;
-    Elf64_Off old_offset = shdr[i].sh_offset;    
-    Elf64_Off new_offset = old_offset + sizeof(Elf64_Phdr);
-    if(i > file_header.e_shstrndx)
-    {
-      new_offset += strtab_size_increase;
-    }
-    memcpy(obuffer + new_offset, ibuffer + old_offset, shdr[i].sh_size);
-    printf("Section[%u] %lX - %lX\n", i, new_offset, new_offset + shdr[i].sh_size);
+    memcpy(obuffer + shdr[i].sh_offset, ibuffer + shdr[i].sh_offset, shdr[i].sh_size);
+    printf("Section[%u] %lX - %lX\n", i, shdr[i].sh_offset, shdr[i].sh_offset + shdr[i].sh_size);
+    /*
     if(i == file_header.e_shstrndx)
-    {      
-      memcpy(obuffer + new_offset + new_shdr.sh_name, new_section_name, new_strlen);
+    { 
+      printf("string table offset= %lX\n", shdr[i].sh_offset);
+      printf("string table size= %lX\n", shdr[i].sh_size);
+      printf("string table %lX - %lX\n", shdr[i].sh_offset, shdr[i].sh_offset + shdr[i].sh_size);
+      printf("memcpy(%lX, %s, %lu)\n", shdr[i].sh_offset + new_shdr.sh_name, new_section_name, new_strlen);
+      //memcpy(obuffer + shdr[i].sh_offset  + new_shdr.sh_name, new_section_name, new_strlen);
     }
-    shdr[i].sh_offset = new_offset;
-    //shdr[i].sh_addr += sizeof(Elf64_Phdr);
+    */
   }
+  //memcpy(obuffer + prgend_byte + sizeof(Elf64_Phdr), ibuffer + prgend_byte, 1);
   memset(obuffer + new_shdr.sh_offset, 0, new_shdr.sh_size);
   printf("* Section[%u] %lX - %lX\n",
     file_header.e_shnum - 1,
@@ -295,12 +297,12 @@ program: ;
   printf("Updated Ehdr Phdr Number: %lu\n", file_header.e_phnum);
   printf("Updated Ehdr Shdr Offset: %lX\n", file_header.e_shoff);
   printf("Updated Ehdr Shdr Number: %lu\n", file_header.e_shnum);
-  printf("Increase string table size from %lX -> %lX\n",
-    strtab_old_size, shdr_strtab->sh_size);
+  //printf("Increase string table size from %lX -> %lX\n",
+  //  strtab_old_size, shdr_strtab->sh_size);
   printf("Added Section: %s, Offset: %lX, Size: %lX, Address: %lX\n",
     new_section_name, new_shdr.sh_offset, new_shdr.sh_size, new_shdr.sh_addr);
-  printf("Added Segment: Offset: %lX, VAddress: %lX, MemSz: %lX\n",
-    new_phdr.p_offset, new_phdr.p_vaddr, new_phdr.p_memsz);
+  //printf("Added Segment: Offset: %lX, VAddress: %lX, MemSz: %lX\n",
+  //  new_phdr.p_offset, new_phdr.p_vaddr, new_phdr.p_memsz);
     
   FILE* ohandle = fopen("out", "wb");
   if(ohandle == NULL)
